@@ -6,7 +6,9 @@ import 'package:wifi_iot/wifi_iot.dart';
 import 'package:http/http.dart' as http;
 import 'package:wifi_scan/wifi_scan.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
+import 'dart:convert';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:encrypt/encrypt.dart' as encrypt; // <--- ADD THIS EXACT LINE
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -522,35 +524,43 @@ class AddQrPage extends StatefulWidget {
 }
 
 class _AddQrPageState extends State<AddQrPage> {
-  final TextEditingController _qrController = TextEditingController();
+  final MobileScannerController _scannerController = MobileScannerController();
   final DatabaseReference _qrRef = FirebaseDatabase.instance.ref('qr_codes');
 
-  void _saveQr() async {
-    final code = _qrController.text.trim();
-    if (code.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Enter a QR code'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
+  void _handleScannedQRCode(String scannedGarbageText) async {
+    // 1. The EXACT same key from your Python script
+    final keyString = 'V1Z-zR58x_Z82W7-VvA4YyY_5bH1nF_L9qN8xT8vWzI=';
+    // 2. Set up the Fernet decrypter
+    final b64Key = encrypt.Key.fromUtf8(keyString);
+    final fernet = encrypt.Fernet(b64Key);
+    final encrypter = encrypt.Encrypter(fernet);
+
     try {
+      // 3. Decrypt the garbage text back into JSON!
+      final decryptedJsonString = encrypter.decrypt64(scannedGarbageText);
+      // 4. Parse it just like normal
+      Map<String, dynamic> data = jsonDecode(decryptedJsonString);
+
+      // Save the decrypted data (or token) to Firebase
       await _qrRef.push().set({
-        'code': code,
+        'code': scannedGarbageText,
+        'decrypted': data,
         'timestamp': ServerValue.timestamp,
       });
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('QR code saved'),
+          content: Text('QR code decrypted and saved'),
           backgroundColor: Colors.green,
         ),
       );
       Navigator.pop(context);
     } catch (e) {
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error: $e'), backgroundColor: Colors.red),
+        const SnackBar(
+          content: Text('Security Alert: Invalid or fake QR Code scanned!'),
+          backgroundColor: Colors.red,
+        ),
       );
     }
   }
@@ -563,17 +573,19 @@ class _AddQrPageState extends State<AddQrPage> {
         padding: const EdgeInsets.all(24.0),
         child: Column(
           children: [
-            TextField(
-              controller: _qrController,
-              decoration: const InputDecoration(
-                labelText: 'QR Code',
-                border: OutlineInputBorder(),
+            Expanded(
+              child: MobileScanner(
+                controller: _scannerController,
+                //allowDuplicates: false, // unsupported param removed
+                onDetect: (capture) {
+                  if (capture.barcodes.isNotEmpty) {
+                    final String? code = capture.barcodes.first.rawValue;
+                    if (code != null) {
+                      _handleScannedQRCode(code);
+                    }
+                  }
+                },
               ),
-            ),
-            const SizedBox(height: 20),
-            ElevatedButton(
-              onPressed: _saveQr,
-              child: const Text('Save to Firebase'),
             ),
           ],
         ),
