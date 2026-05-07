@@ -465,7 +465,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   child: MobileScanner(
                     controller: _cameraController,
                     // allowDuplicates removed (unsupported)
-                    onDetect: (capture) {
+                    onDetect: (capture) async {
                       if (capture.barcodes.isNotEmpty) {
                         final String? code = capture.barcodes.first.rawValue;
                         if (code != null && code != _qrResult) {
@@ -475,13 +475,43 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                           ScaffoldMessenger.of(context).showSnackBar(
                             SnackBar(content: Text('Scanned: $code')),
                           );
-                          // Navigate to dashboard after successful scan
-                          Navigator.pushReplacement(
-                            context,
-                            MaterialPageRoute(
-                              builder: (_) => const DashboardScreen(),
-                            ),
-                          );
+                          // Verify QR code against stored Firebase entries
+                          try {
+                            final DatabaseReference qrRef = FirebaseDatabase
+                                .instance
+                                .ref('qr_codes');
+                            final DatabaseEvent event = await qrRef
+                                .orderByChild('code')
+                                .equalTo(code)
+                                .once();
+                            final DataSnapshot snapshot = event.snapshot;
+                            if (snapshot.value != null) {
+                              // QR found – proceed to dashboard
+                              Navigator.pushReplacement(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const DashboardScreen(),
+                                ),
+                              );
+                            } else {
+                              // No matching QR – show error
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Unsuccessful login: QR not recognized',
+                                  ),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Error checking QR: $e'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
                         }
                       }
                     },
@@ -527,27 +557,28 @@ class _AddQrPageState extends State<AddQrPage> {
   final MobileScannerController _scannerController = MobileScannerController();
   final DatabaseReference _qrRef = FirebaseDatabase.instance.ref('qr_codes');
 
+  // 🔴 ADD THIS: The security lock to prevent rapid-fire scanning
+  bool _isProcessing = false;
+
   void _handleScannedQRCode(String scannedGarbageText) async {
-    // 1. The EXACT same key from your Python script
     final keyString = 'V1Z-zR58x_Z82W7-VvA4YyY_5bH1nF_L9qN8xT8vWzI=';
-    // 2. Set up the Fernet decrypter
-    final b64Key = encrypt.Key.fromUtf8(keyString);
+    final normalizedKey = keyString.replaceAll('-', '+').replaceAll('_', '/');
+    final b64Key = encrypt.Key.fromBase64(normalizedKey);
+
     final fernet = encrypt.Fernet(b64Key);
     final encrypter = encrypt.Encrypter(fernet);
 
     try {
-      // 3. Decrypt the garbage text back into JSON!
       final decryptedJsonString = encrypter.decrypt64(scannedGarbageText);
-      // 4. Parse it just like normal
       Map<String, dynamic> data = jsonDecode(decryptedJsonString);
 
-      // Save the decrypted data (or token) to Firebase
       await _qrRef.push().set({
         'code': scannedGarbageText,
         'decrypted': data,
         'timestamp': ServerValue.timestamp,
       });
 
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('QR code decrypted and saved'),
@@ -556,12 +587,18 @@ class _AddQrPageState extends State<AddQrPage> {
       );
       Navigator.pop(context);
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Security Alert: Invalid or fake QR Code scanned!'),
           backgroundColor: Colors.red,
         ),
       );
+
+      // 🔴 UNLOCK if it failed, so the user can try scanning again
+      setState(() {
+        _isProcessing = false;
+      });
     }
   }
 
@@ -576,11 +613,18 @@ class _AddQrPageState extends State<AddQrPage> {
             Expanded(
               child: MobileScanner(
                 controller: _scannerController,
-                //allowDuplicates: false, // unsupported param removed
                 onDetect: (capture) {
+                  // 🔴 ADD THIS: Check the lock before doing anything!
+                  if (_isProcessing) return;
+
                   if (capture.barcodes.isNotEmpty) {
                     final String? code = capture.barcodes.first.rawValue;
                     if (code != null) {
+                      // 🔴 LOCK THE SCANNER so it doesn't trigger again
+                      setState(() {
+                        _isProcessing = true;
+                      });
+
                       _handleScannedQRCode(code);
                     }
                   }
