@@ -5,12 +5,15 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:wifi_iot/wifi_iot.dart';
 import 'package:http/http.dart' as http;
 import 'package:wifi_scan/wifi_scan.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
+import 'dart:convert';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:encrypt/encrypt.dart' as encrypt; // <--- ADD THIS EXACT LINE
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(); 
-  
+  await Firebase.initializeApp();
+
   // Check if this is the first time the app is opened
   final prefs = await SharedPreferences.getInstance();
   final bool isFirstTime = prefs.getBool('isFirstTime') ?? true;
@@ -38,6 +41,7 @@ class ChargingStationAdmin extends StatelessWidget {
     );
   }
 }
+
 // ==========================================
 // NEW: ONBOARDING FLOW (First Time Setup)
 // ==========================================
@@ -52,22 +56,26 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   final PageController _pageController = PageController();
   final TextEditingController _passController = TextEditingController();
 
-  List<String> _scannedSSIDs = []; 
+  List<String> _scannedSSIDs = [];
   String? _selectedSSID;
   bool _isConnecting = false;
   bool _isScanningWiFi = false;
+  String? _qrResult;
+  final MobileScannerController _cameraController = MobileScannerController();
 
   // FUNCTION 1: Auto-Connect to the ESP32 (Still uses wifi_iot)
   Future<void> _connectToMachine() async {
-    setState(() { _isConnecting = true; });
+    setState(() {
+      _isConnecting = true;
+    });
 
     try {
       bool isConnected = await WiFiForIoTPlugin.connect(
         "ESP32_VENDO", // Ensure this matches your ESP32's AP name
-        password: "12345678", 
-        security: NetworkSecurity.WPA, 
-        joinOnce: true, 
-        withInternet: false, 
+        password: "12345678",
+        security: NetworkSecurity.WPA,
+        joinOnce: true,
+        withInternet: false,
       );
 
       if (isConnected) {
@@ -75,20 +83,29 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         await WiFiForIoTPlugin.forceWifiUsage(true);
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Connected! Scanning for nearby WiFi..."), backgroundColor: Colors.green),
+            const SnackBar(
+              content: Text("Connected! Scanning for nearby WiFi..."),
+              backgroundColor: Colors.green,
+            ),
           );
         }
-        
+
         // AUTO-SCAN trigger immediately after connecting
         await _scanNearbyWiFi();
 
         if (mounted) {
-          _pageController.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
+          _pageController.nextPage(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.ease,
+          );
         }
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Could not connect. Is the machine turned on?"), backgroundColor: Colors.red),
+            const SnackBar(
+              content: Text("Could not connect. Is the machine turned on?"),
+              backgroundColor: Colors.red,
+            ),
           );
         }
       }
@@ -96,33 +113,37 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       debugPrint("WiFi Connection Error: $e");
     } finally {
       if (mounted) {
-        setState(() { _isConnecting = false; });
+        setState(() {
+          _isConnecting = false;
+        });
       }
     }
   }
 
   // FUNCTION 2: Scan for nearby WiFi networks (Now uses wifi_scan & permissions)
   Future<void> _scanNearbyWiFi() async {
-    setState(() { _isScanningWiFi = true; });
-    
+    setState(() {
+      _isScanningWiFi = true;
+    });
+
     try {
       // 1. Request Location Permission (Strictly required by Android for WiFi scanning)
       var status = await Permission.location.request();
-      
+
       if (status.isGranted) {
         // 2. Check if the device allows us to start a scan
         final canScan = await WiFiScan.instance.canStartScan();
-        
+
         if (canScan == CanStartScan.yes) {
           // 3. Command the hardware to scan
           await WiFiScan.instance.startScan();
-          
+
           // Give the phone hardware 2 seconds to find networks
           await Future.delayed(const Duration(seconds: 2));
-          
+
           // 4. Fetch the results
           final results = await WiFiScan.instance.getScannedResults();
-          
+
           // Filter out empty names and duplicates
           List<String> uniqueSSIDs = results
               .map((net) => net.ssid)
@@ -134,7 +155,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             setState(() {
               _scannedSSIDs = uniqueSSIDs;
               if (uniqueSSIDs.isNotEmpty) {
-                _selectedSSID = uniqueSSIDs.first; 
+                _selectedSSID = uniqueSSIDs.first;
               }
             });
           }
@@ -144,7 +165,12 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text("Location permission is required to scan for WiFi."), backgroundColor: Colors.orange),
+            const SnackBar(
+              content: Text(
+                "Location permission is required to scan for WiFi.",
+              ),
+              backgroundColor: Colors.orange,
+            ),
           );
         }
       }
@@ -152,7 +178,9 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       debugPrint("Scan error: $e");
     } finally {
       if (mounted) {
-        setState(() { _isScanningWiFi = false; });
+        setState(() {
+          _isScanningWiFi = false;
+        });
       }
     }
   }
@@ -175,7 +203,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       appBar: AppBar(title: const Text("Machine Setup")),
       body: PageView(
         controller: _pageController,
-        physics: const NeverScrollableScrollPhysics(), 
+        physics: const NeverScrollableScrollPhysics(),
         children: [
           // PAGE 1: Connect to ESP32
           Padding(
@@ -185,24 +213,56 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
               children: [
                 const Icon(Icons.wifi_tethering, size: 80, color: Colors.blue),
                 const SizedBox(height: 20),
-                const Text("Step 1: Link to Machine", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Step 1: Link to Machine",
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 10),
                 const Text(
                   "Keep your phone near the Vendo Machine. We will connect to it automatically.",
                   textAlign: TextAlign.center,
                 ),
                 const SizedBox(height: 40),
-                
-                _isConnecting 
-                  ? const CircularProgressIndicator()
-                  : ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-                        textStyle: const TextStyle(fontSize: 18)
+
+                _isConnecting
+                    ? const CircularProgressIndicator()
+                    : ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 40,
+                            vertical: 15,
+                          ),
+                          textStyle: const TextStyle(fontSize: 18),
+                        ),
+                        onPressed: _connectToMachine,
+                        child: const Text("Connect to Machine"),
                       ),
-                      onPressed: _connectToMachine,
-                      child: const Text("Connect to Machine"),
-                    )
+                const SizedBox(height: 16),
+                // TEMP button to add QR code to Firebase (opens new page)
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                  ),
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(builder: (_) => const AddQrPage()),
+                    );
+                  },
+                  child: const Text('Add QR Code (Temp)'),
+                ),
+                const SizedBox(height: 16),
+                // TEMP skip button to go directly to Dashboard
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                  onPressed: () {
+                    _pageController.nextPage(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.ease,
+                    );
+                  },
+                  child: const Text("Skip to Next Page (Temp)"),
+                ),
               ],
             ),
           ),
@@ -213,9 +273,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Text("Step 2: Internet Setup", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Step 2: Internet Setup",
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 10),
-                const Text("Select your Home WiFi so the machine can connect to the cloud.", textAlign: TextAlign.center),
+                const Text(
+                  "Select your Home WiFi so the machine can connect to the cloud.",
+                  textAlign: TextAlign.center,
+                ),
                 const SizedBox(height: 30),
 
                 // Show loader if scanning
@@ -224,7 +290,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     children: [
                       CircularProgressIndicator(),
                       SizedBox(height: 10),
-                      Text("Scanning for networks...")
+                      Text("Scanning for networks..."),
                     ],
                   )
                 // Show dropdown if networks were found
@@ -239,7 +305,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     }).toList(),
                     onChanged: (val) => setState(() => _selectedSSID = val),
                     decoration: const InputDecoration(
-                      labelText: "Select Nearby WiFi", 
+                      labelText: "Select Nearby WiFi",
                       border: OutlineInputBorder(),
                       prefixIcon: Icon(Icons.wifi),
                     ),
@@ -249,7 +315,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   Column(
                     children: [
                       const Text(
-                        "No networks found. Please ensure Location is turned on.", 
+                        "No networks found. Please ensure Location is turned on.",
                         style: TextStyle(color: Colors.red),
                         textAlign: TextAlign.center,
                       ),
@@ -258,7 +324,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         icon: const Icon(Icons.refresh),
                         label: const Text("Rescan Networks"),
                         onPressed: _scanNearbyWiFi,
-                      )
+                      ),
                     ],
                   ),
 
@@ -267,12 +333,15 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 // PASSWORD FIELD
                 TextField(
                   controller: _passController,
-                  decoration: const InputDecoration(labelText: "WiFi Password", border: OutlineInputBorder()),
+                  decoration: const InputDecoration(
+                    labelText: "WiFi Password",
+                    border: OutlineInputBorder(),
+                  ),
                   obscureText: true,
                 ),
                 const SizedBox(height: 30),
 
-// =====================================
+                // =====================================
                 // SEND BUTTON (Replace your old one with this)
                 // =====================================
                 ElevatedButton(
@@ -280,79 +349,290 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     // 1. Check if fields are empty
                     if (_selectedSSID == null || _passController.text.isEmpty) {
                       ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text("Please select a WiFi and enter the password."), backgroundColor: Colors.orange),
+                        const SnackBar(
+                          content: Text(
+                            "Please select a WiFi and enter the password.",
+                          ),
+                          backgroundColor: Colors.orange,
+                        ),
                       );
                       return;
                     }
 
                     try {
                       // 2. Send the HTTP POST request WITH A 7-SECOND TIMEOUT
-                      var response = await http.post(
-                        Uri.parse('http://192.168.4.1/setup'), 
-                        body: {
-                          "ssid": _selectedSSID, 
-                          "pass": _passController.text
-                        }
-                      ).timeout(const Duration(seconds: 7)); // <--- TIMEOUT ADDED HERE
+                      var response = await http
+                          .post(
+                            Uri.parse('http://192.168.4.1/setup'),
+                            body: {
+                              "ssid": _selectedSSID,
+                              "pass": _passController.text,
+                            },
+                          )
+                          .timeout(
+                            const Duration(seconds: 7),
+                          ); // <--- TIMEOUT ADDED HERE
 
-                      if (!context.mounted) return; 
+                      if (!context.mounted) return;
 
                       // 3. Success check
                       if (response.statusCode == 200) {
                         // 🔴 NEW: Turn off the force-route so their phone works normally again
                         await WiFiForIoTPlugin.forceWifiUsage(false);
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("Credentials sent! Machine is rebooting."), backgroundColor: Colors.green),
+                          const SnackBar(
+                            content: Text(
+                              "Credentials sent! Machine is rebooting.",
+                            ),
+                            backgroundColor: Colors.green,
+                          ),
                         );
-                        _pageController.nextPage(duration: const Duration(milliseconds: 300), curve: Curves.ease);
+                        _pageController.nextPage(
+                          duration: const Duration(milliseconds: 300),
+                          curve: Curves.ease,
+                        );
                       } else {
                         ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("Machine rejected the data."), backgroundColor: Colors.red),
+                          const SnackBar(
+                            content: Text("Machine rejected the data."),
+                            backgroundColor: Colors.red,
+                          ),
                         );
                       }
                     } catch (e) {
                       // 🔴 NEW: Turn off force-route on failure
                       await WiFiForIoTPlugin.forceWifiUsage(false);
-                      if (!context.mounted) return; 
-                      
-                      debugPrint("HTTP POST FAILED: $e"); 
-                      
+                      if (!context.mounted) return;
+
+                      debugPrint("HTTP POST FAILED: $e");
+
                       // 🔴 CHANGED THIS LINE to show the true error
                       ScaffoldMessenger.of(context).showSnackBar(
                         SnackBar(
-                          content: Text("TRUE ERROR: ${e.toString()}"), // <-- This is the magic line
+                          content: Text(
+                            "TRUE ERROR: ${e.toString()}",
+                          ), // <-- This is the magic line
                           backgroundColor: Colors.red,
-                          duration: const Duration(seconds: 10), // Stays on screen for 10 seconds
+                          duration: const Duration(
+                            seconds: 10,
+                          ), // Stays on screen for 10 seconds
                         ),
                       );
                     }
                   },
                   child: const Text("Send to Machine"),
-                )
+                ),
+                const SizedBox(height: 16),
+                // TEMP skip button to next page
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                  onPressed: () {
+                    _pageController.nextPage(
+                      duration: const Duration(milliseconds: 300),
+                      curve: Curves.ease,
+                    );
+                  },
+                  child: const Text("Skip to Next Page (Temp)"),
+                ),
               ],
             ),
           ),
 
-          // PAGE 3: QR Scanner Placeholder
+          // PAGE 3: QR Scanner
           Padding(
             padding: const EdgeInsets.all(24.0),
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisAlignment: MainAxisAlignment.start,
               children: [
-                const Icon(Icons.qr_code_scanner, size: 80, color: Colors.green),
+                const Icon(
+                  Icons.qr_code_scanner,
+                  size: 80,
+                  color: Colors.green,
+                ),
                 const SizedBox(height: 20),
-                const Text("Step 3: Link Machine", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                const Text(
+                  "Step 3: Link Machine",
+                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                ),
                 const SizedBox(height: 10),
-                const Text("Scan the QR code on your Vendo Machine to link it to your account.", textAlign: TextAlign.center),
-                const SizedBox(height: 40),
+                const Text(
+                  "Scan the QR code on your Vendo Machine to link it to your account.",
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 20),
+                // Camera scanner
+                Expanded(
+                  child: MobileScanner(
+                    controller: _cameraController,
+                    // allowDuplicates removed (unsupported)
+                    onDetect: (capture) async {
+                      if (capture.barcodes.isNotEmpty) {
+                        final String? code = capture.barcodes.first.rawValue;
+                        if (code != null && code != _qrResult) {
+                          setState(() {
+                            _qrResult = code;
+                          });
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(content: Text('Scanned: $code')),
+                          );
+                          // Verify QR code against stored Firebase entries
+                          try {
+                            final DatabaseReference qrRef = FirebaseDatabase
+                                .instance
+                                .ref('qr_codes');
+                            final DatabaseEvent event = await qrRef
+                                .orderByChild('code')
+                                .equalTo(code)
+                                .once();
+                            final DataSnapshot snapshot = event.snapshot;
+                            if (snapshot.value != null) {
+                              // QR found – proceed to dashboard
+                              Navigator.pushReplacement(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (_) => const DashboardScreen(),
+                                ),
+                              );
+                            } else {
+                              // No matching QR – show error
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text(
+                                    'Unsuccessful login: QR not recognized',
+                                  ),
+                                  backgroundColor: Colors.red,
+                                ),
+                              );
+                            }
+                          } catch (e) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text('Error checking QR: $e'),
+                                backgroundColor: Colors.red,
+                              ),
+                            );
+                          }
+                        }
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(height: 10),
                 ElevatedButton(
                   onPressed: _finishSetup,
                   child: const Text("Simulate QR Scan & Finish"),
-                )
+                ),
+                const SizedBox(height: 16),
+                // TEMP skip button (final step) to go to Dashboard
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.grey),
+                  onPressed: () {
+                    Navigator.pushReplacement(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => const DashboardScreen(),
+                      ),
+                    );
+                  },
+                  child: const Text("Skip to Dashboard (Temp)"),
+                ),
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Temporary page to add/save QR codes to Firebase
+class AddQrPage extends StatefulWidget {
+  const AddQrPage({super.key});
+
+  @override
+  State<AddQrPage> createState() => _AddQrPageState();
+}
+
+class _AddQrPageState extends State<AddQrPage> {
+  final MobileScannerController _scannerController = MobileScannerController();
+  final DatabaseReference _qrRef = FirebaseDatabase.instance.ref('qr_codes');
+
+  // 🔴 ADD THIS: The security lock to prevent rapid-fire scanning
+  bool _isProcessing = false;
+
+  void _handleScannedQRCode(String scannedGarbageText) async {
+    final keyString = 'V1Z-zR58x_Z82W7-VvA4YyY_5bH1nF_L9qN8xT8vWzI=';
+    final normalizedKey = keyString.replaceAll('-', '+').replaceAll('_', '/');
+    final b64Key = encrypt.Key.fromBase64(normalizedKey);
+
+    final fernet = encrypt.Fernet(b64Key);
+    final encrypter = encrypt.Encrypter(fernet);
+
+    try {
+      final decryptedJsonString = encrypter.decrypt64(scannedGarbageText);
+      Map<String, dynamic> data = jsonDecode(decryptedJsonString);
+
+      await _qrRef.push().set({
+        'code': scannedGarbageText,
+        'decrypted': data,
+        'timestamp': ServerValue.timestamp,
+      });
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('QR code decrypted and saved'),
+          backgroundColor: Colors.green,
+        ),
+      );
+      Navigator.pop(context);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Security Alert: Invalid or fake QR Code scanned!'),
+          backgroundColor: Colors.red,
+        ),
+      );
+
+      // 🔴 UNLOCK if it failed, so the user can try scanning again
+      setState(() {
+        _isProcessing = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Add QR Code (Temp)')),
+      body: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          children: [
+            Expanded(
+              child: MobileScanner(
+                controller: _scannerController,
+                onDetect: (capture) {
+                  // 🔴 ADD THIS: Check the lock before doing anything!
+                  if (_isProcessing) return;
+
+                  if (capture.barcodes.isNotEmpty) {
+                    final String? code = capture.barcodes.first.rawValue;
+                    if (code != null) {
+                      // 🔴 LOCK THE SCANNER so it doesn't trigger again
+                      setState(() {
+                        _isProcessing = true;
+                      });
+
+                      _handleScannedQRCode(code);
+                    }
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -402,15 +682,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
             return const Center(child: Text("Waiting for ESP32 data..."));
           }
 
-          final rawData = snapshot.data!.snapshot.value as Map<dynamic, dynamic>;
-          
-          if (rawData['settings'] != null && rawData['settings']['coins'] != null) {
-            currentSettings = Map<String, dynamic>.from(rawData['settings']['coins']);
+          final rawData =
+              snapshot.data!.snapshot.value as Map<dynamic, dynamic>;
+
+          if (rawData['settings'] != null &&
+              rawData['settings']['coins'] != null) {
+            currentSettings = Map<String, dynamic>.from(
+              rawData['settings']['coins'],
+            );
           }
 
-          final earnings = rawData['total_earnings'] as Map<dynamic, dynamic>? ?? {};
-          final double chargingRevenue = double.tryParse(earnings['charging']?.toString() ?? '0') ?? 0.0;
-          final double wifiRevenue = double.tryParse(earnings['wifi']?.toString() ?? '0') ?? 0.0;
+          final earnings =
+              rawData['total_earnings'] as Map<dynamic, dynamic>? ?? {};
+          final double chargingRevenue =
+              double.tryParse(earnings['charging']?.toString() ?? '0') ?? 0.0;
+          final double wifiRevenue =
+              double.tryParse(earnings['wifi']?.toString() ?? '0') ?? 0.0;
           final double totalRevenue = chargingRevenue + wifiRevenue;
 
           return Padding(
@@ -418,9 +705,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _buildRevenueCard("Total Collected", totalRevenue, Colors.green),
+                _buildRevenueCard(
+                  "Total Collected",
+                  totalRevenue,
+                  Colors.green,
+                ),
                 const SizedBox(height: 12),
-                _buildRevenueCard("Charging Station", chargingRevenue, Colors.blue),
+                _buildRevenueCard(
+                  "Charging Station",
+                  chargingRevenue,
+                  Colors.blue,
+                ),
                 const SizedBox(height: 12),
                 _buildRevenueCard("WiFi Vending", wifiRevenue, Colors.orange),
                 const SizedBox(height: 20),
@@ -449,9 +744,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 20, horizontal: 16),
         child: ListTile(
-          title: Text(title, style: const TextStyle(color: Colors.white70, fontSize: 16)),
-          subtitle: Text("₱ ${amount.toStringAsFixed(2)}",
-              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.white)),
+          title: Text(
+            title,
+            style: const TextStyle(color: Colors.white70, fontSize: 16),
+          ),
+          subtitle: Text(
+            "₱ ${amount.toStringAsFixed(2)}",
+            style: const TextStyle(
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+            ),
+          ),
         ),
       ),
     );
@@ -459,10 +763,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   void _showSettingsDialog() {
     Map<String, dynamic> tempSettings = {
-      "1": {"enabled": currentSettings["1"]?["enabled"] ?? true, "time": currentSettings["1"]?["time"] ?? 5},
-      "5": {"enabled": currentSettings["5"]?["enabled"] ?? true, "time": currentSettings["5"]?["time"] ?? 15},
-      "10": {"enabled": currentSettings["10"]?["enabled"] ?? true, "time": currentSettings["10"]?["time"] ?? 30},
-      "20": {"enabled": currentSettings["20"]?["enabled"] ?? true, "time": currentSettings["20"]?["time"] ?? 60},
+      "1": {
+        "enabled": currentSettings["1"]?["enabled"] ?? true,
+        "time": currentSettings["1"]?["time"] ?? 5,
+      },
+      "5": {
+        "enabled": currentSettings["5"]?["enabled"] ?? true,
+        "time": currentSettings["5"]?["time"] ?? 15,
+      },
+      "10": {
+        "enabled": currentSettings["10"]?["enabled"] ?? true,
+        "time": currentSettings["10"]?["time"] ?? 30,
+      },
+      "20": {
+        "enabled": currentSettings["20"]?["enabled"] ?? true,
+        "time": currentSettings["20"]?["time"] ?? 60,
+      },
     };
 
     showDialog(
@@ -479,7 +795,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     padding: const EdgeInsets.only(bottom: 12.0),
                     child: Row(
                       children: [
-                        SizedBox(width: 50, child: Text("₱$coin", style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
+                        SizedBox(
+                          width: 50,
+                          child: Text(
+                            "₱$coin",
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
                         Expanded(
                           child: TextField(
                             keyboardType: TextInputType.number,
@@ -490,11 +815,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               isDense: true,
                             ),
                             onChanged: (val) {
-                              tempSettings[coin]["time"] = int.tryParse(val) ?? tempSettings[coin]["time"];
-                              tempSettings[coin]["enabled"] = true; 
+                              tempSettings[coin]["time"] =
+                                  int.tryParse(val) ??
+                                  tempSettings[coin]["time"];
+                              tempSettings[coin]["enabled"] = true;
                             },
                           ),
-                        )
+                        ),
                       ],
                     ),
                   );
@@ -502,7 +829,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
             actions: [
-              TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Cancel"),
+              ),
               ElevatedButton(
                 onPressed: () {
                   Map<String, Object> updates = {};
@@ -518,7 +848,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ],
           );
-        }
+        },
       ),
     );
   }
@@ -544,7 +874,8 @@ class LogsScreen extends StatelessWidget {
           }
 
           final logs = snapshot.data!.snapshot.value as Map<dynamic, dynamic>;
-          final sortedDates = logs.keys.toList()..sort((a, b) => b.compareTo(a));
+          final sortedDates = logs.keys.toList()
+            ..sort((a, b) => b.compareTo(a));
 
           return ListView(
             children: <Widget>[
@@ -552,25 +883,36 @@ class LogsScreen extends StatelessWidget {
                 final entry = logs[date] as Map<dynamic, dynamic>;
                 final charging = entry['charging'] ?? 0;
                 final wifi = entry['wifi'] ?? 0;
-                
-                final double total = (double.tryParse(charging.toString()) ?? 0) + 
-                                     (double.tryParse(wifi.toString()) ?? 0);
-                                     
+
+                final double total =
+                    (double.tryParse(charging.toString()) ?? 0) +
+                    (double.tryParse(wifi.toString()) ?? 0);
+
                 return Card(
                   margin: const EdgeInsets.all(8),
                   child: ListTile(
-                    title: Text(date.toString(), style: const TextStyle(fontWeight: FontWeight.bold)),
-                    subtitle: Text("Charging: ₱$charging | WiFi: ₱$wifi | Total: ₱$total"),
+                    title: Text(
+                      date.toString(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    subtitle: Text(
+                      "Charging: ₱$charging | WiFi: ₱$wifi | Total: ₱$total",
+                    ),
                   ),
                 );
-              }), 
-              
+              }),
+
               Padding(
                 padding: const EdgeInsets.all(16.0),
                 child: ElevatedButton.icon(
                   icon: const Icon(Icons.delete_forever, color: Colors.white),
-                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
-                  label: const Text("Clear All Logs", style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red.shade800,
+                  ),
+                  label: const Text(
+                    "Clear All Logs",
+                    style: TextStyle(color: Colors.white),
+                  ),
                   onPressed: () {
                     _showClearLogsConfirmation(context, logRef);
                   },
@@ -583,13 +925,18 @@ class LogsScreen extends StatelessWidget {
     );
   }
 
-  void _showClearLogsConfirmation(BuildContext context, DatabaseReference logRef) {
+  void _showClearLogsConfirmation(
+    BuildContext context,
+    DatabaseReference logRef,
+  ) {
     showDialog(
       context: context,
       builder: (BuildContext dialogContext) {
         return AlertDialog(
           title: const Text("Clear All Logs?"),
-          content: const Text("Are you sure you want to delete all daily logs? This cannot be undone."),
+          content: const Text(
+            "Are you sure you want to delete all daily logs? This cannot be undone.",
+          ),
           actions: [
             TextButton(
               onPressed: () => Navigator.pop(dialogContext),
@@ -598,10 +945,13 @@ class LogsScreen extends StatelessWidget {
             ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
               onPressed: () {
-                logRef.remove(); 
-                Navigator.pop(dialogContext); 
+                logRef.remove();
+                Navigator.pop(dialogContext);
               },
-              child: const Text("Delete", style: TextStyle(color: Colors.white)),
+              child: const Text(
+                "Delete",
+                style: TextStyle(color: Colors.white),
+              ),
             ),
           ],
         );
