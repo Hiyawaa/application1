@@ -586,12 +586,8 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
 class _ScanOverlayPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
-    final p = Paint()
-      ..color = AppColors.accentAlt
-      ..strokeWidth = 3
-      ..style = PaintingStyle.stroke;
-      
-    const r = 24.0; // This controls the length of the corner lines
+    final p = Paint()..color = AppColors.accentAlt..strokeWidth = 3..style = PaintingStyle.stroke;
+    const r = 24.0;
     
     final corners = [
       [Offset(0, r), Offset(0, 0), Offset(r, 0)],
@@ -599,16 +595,15 @@ class _ScanOverlayPainter extends CustomPainter {
       [Offset(size.width, size.height - r), Offset(size.width, size.height), Offset(size.width - r, size.height)],
       [Offset(r, size.height), Offset(0, size.height), Offset(0, size.height - r)],
     ];
-    
     for (final c in corners) {
       canvas.drawLine(c[0], c[1], p);
       canvas.drawLine(c[1], c[2], p);
     }
   }
-  
   @override
   bool shouldRepaint(_) => false;
 }
+
 // ─────────────────────────────────────────
 // ADD QR PAGE
 // ─────────────────────────────────────────
@@ -896,90 +891,296 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _showSettingsDialog() {
+    // ── local state captured by StatefulBuilder ──────────────────
     Map<String, dynamic> tmp = {
       for (final k in ["1","5","10","20"])
         k: {"enabled": currentSettings[k]?["enabled"] ?? true, "time": currentSettings[k]?["time"] ?? 0}
     };
+    final ssidCtrl  = TextEditingController();
+    final passCtrl  = TextEditingController();
+    bool  isSending = false;
+    bool  passVisible = false;
 
     showDialog(
       context: context,
       builder: (_) => StatefulBuilder(
-        builder: (ctx, setDlg) => AlertDialog(
-          backgroundColor: AppColors.card,
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-          title: const Row(children: [
-            Icon(Icons.tune_rounded, color: AppColors.accent, size: 20),
-            SizedBox(width: 8),
-            Text("Coin Time Settings", style: TextStyle(color: AppColors.textPrim, fontSize: 17, fontWeight: FontWeight.w700)),
-          ]),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: tmp.keys.map((coin) => Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Row(children: [
-                  Container(
-                    width: 46, height: 46,
-                    decoration: BoxDecoration(
-                      color: AppColors.warn.withOpacity(0.1),
-                      shape: BoxShape.circle,
-                      border: Border.all(color: AppColors.warn.withOpacity(0.3)),
+        builder: (ctx, setDlg) {
+
+          // ── Save coin settings ─────────────────────────────────
+          void saveCoinSettings() {
+            Map<String, Object> updates = {};
+            tmp.forEach((c, d) {
+              updates["$c/time"]    = d["time"];
+              updates["$c/enabled"] = d["enabled"];
+            });
+            _db.child("settings/coins").update(updates).then((_) {
+              if (ctx.mounted) {
+                ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                  content: Text("✓ Coin settings saved to station."),
+                  backgroundColor: AppColors.accentAlt,
+                ));
+              }
+            });
+          }
+
+          // ── Send WiFi change to Firebase ───────────────────────
+          Future<void> sendWifiChange() async {
+            if (ssidCtrl.text.trim().isEmpty || passCtrl.text.isEmpty) {
+              ScaffoldMessenger.of(ctx).showSnackBar(const SnackBar(
+                content: Text("Enter both WiFi name and password."),
+                backgroundColor: AppColors.warn,
+              ));
+              return;
+            }
+            setDlg(() => isSending = true);
+            try {
+              await _db.child("commands/wifi_change").set({
+                "ssid":    ssidCtrl.text.trim(),
+                "pass":    passCtrl.text,
+                "pending": true,
+              });
+              if (ctx.mounted) Navigator.pop(ctx);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                  content: Text("✓ WiFi change sent! Machine will reboot shortly."),
+                  backgroundColor: AppColors.accentAlt,
+                  duration: Duration(seconds: 4),
+                ));
+              }
+            } catch (e) {
+              setDlg(() => isSending = false);
+              if (ctx.mounted) ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                content: Text("Failed to send: $e"),
+                backgroundColor: AppColors.danger,
+              ));
+            }
+          }
+
+          // ── Dialog UI ──────────────────────────────────────────
+          return Dialog(
+            backgroundColor: AppColors.card,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 32),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+
+                  // ── Header ───────────────────────────────────
+                  Row(children: [
+                    Container(
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: AppColors.accent.withOpacity(0.12),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: const Icon(Icons.settings_rounded, color: AppColors.accent, size: 20),
                     ),
-                    child: Center(child: Text("₱$coin", style: const TextStyle(color: AppColors.warn, fontWeight: FontWeight.bold, fontSize: 13))),
+                    const SizedBox(width: 10),
+                    const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text("Machine Settings", style: TextStyle(color: AppColors.textPrim, fontSize: 16, fontWeight: FontWeight.w800)),
+                      Text("ESP32 Vendo Configuration", style: TextStyle(color: AppColors.textSub, fontSize: 11)),
+                    ]),
+                  ]),
+                  const SizedBox(height: 22),
+
+                  // ══════════════════════════════════════════════
+                  // SECTION 1 — COIN TIME
+                  // ══════════════════════════════════════════════
+                  _sectionHeader(Icons.monetization_on_rounded, AppColors.warn, "Coin Time Settings"),
+                  const SizedBox(height: 12),
+
+                  Container(
+                    decoration: BoxDecoration(
+                      color: AppColors.surface,
+                      borderRadius: BorderRadius.circular(14),
+                      border: Border.all(color: AppColors.divider),
+                    ),
+                    child: Column(
+                      children: tmp.keys.toList().asMap().entries.map((entry) {
+                        final idx  = entry.key;
+                        final coin = entry.value;
+                        final isLast = idx == tmp.length - 1;
+                        return Column(children: [
+                          Padding(
+                            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                            child: Row(children: [
+                              // Coin badge
+                              Container(
+                                width: 42, height: 42,
+                                decoration: BoxDecoration(
+                                  color: AppColors.warn.withOpacity(0.1),
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: AppColors.warn.withOpacity(0.35)),
+                                ),
+                                child: Center(child: Text("₱$coin",
+                                  style: const TextStyle(color: AppColors.warn, fontWeight: FontWeight.w800, fontSize: 12))),
+                              ),
+                              const SizedBox(width: 12),
+                              // Time input
+                              Expanded(child: TextField(
+                                keyboardType: TextInputType.number,
+                                style: const TextStyle(color: AppColors.textPrim, fontSize: 14),
+                                decoration: InputDecoration(
+                                  hintText: tmp[coin]["time"].toString(),
+                                  hintStyle: const TextStyle(color: AppColors.textSub),
+                                  suffixText: "min",
+                                  suffixStyle: const TextStyle(color: AppColors.textSub, fontSize: 12),
+                                  filled: true,
+                                  fillColor: AppColors.card,
+                                  isDense: true,
+                                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                  enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppColors.divider)),
+                                  focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: const BorderSide(color: AppColors.warn)),
+                                ),
+                                onChanged: (v) {
+                                  tmp[coin]["time"]    = int.tryParse(v) ?? tmp[coin]["time"];
+                                  tmp[coin]["enabled"] = true;
+                                },
+                              )),
+                            ]),
+                          ),
+                          if (!isLast) const Divider(color: AppColors.divider, height: 1, indent: 14, endIndent: 14),
+                        ]);
+                      }).toList(),
+                    ),
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(child: TextField(
-                    keyboardType: TextInputType.number,
-                    style: const TextStyle(color: AppColors.textPrim),
+                  const SizedBox(height: 10),
+
+                  // Save coin settings button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 44,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.warn.withOpacity(0.15),
+                        foregroundColor: AppColors.warn,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: AppColors.warn.withOpacity(0.4)),
+                        ),
+                      ),
+                      onPressed: saveCoinSettings,
+                      icon: const Icon(Icons.save_rounded, size: 17),
+                      label: const Text("Save Coin Settings", style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+
+                  // ══════════════════════════════════════════════
+                  // SECTION 2 — WIFI CHANGE
+                  // ══════════════════════════════════════════════
+                  _sectionHeader(Icons.wifi_rounded, AppColors.accent, "Machine WiFi Network"),
+                  const SizedBox(height: 12),
+
+                  // Info banner
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: AppColors.accent.withOpacity(0.06),
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppColors.accent.withOpacity(0.2)),
+                    ),
+                    child: const Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Icon(Icons.info_outline_rounded, color: AppColors.accent, size: 15),
+                      SizedBox(width: 8),
+                      Expanded(child: Text(
+                        "The machine will save the new credentials and reboot. Both master and slave ESP32 will reconnect automatically.",
+                        style: TextStyle(color: AppColors.textSub, fontSize: 11, height: 1.5),
+                      )),
+                    ]),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // SSID field
+                  TextField(
+                    controller: ssidCtrl,
+                    style: const TextStyle(color: AppColors.textPrim, fontSize: 14),
                     decoration: InputDecoration(
-                      labelText: "Minutes",
+                      labelText: "New WiFi Name (SSID)",
                       labelStyle: const TextStyle(color: AppColors.textSub, fontSize: 13),
-                      hintText: tmp[coin]["time"].toString(),
-                      hintStyle: const TextStyle(color: AppColors.textSub),
                       filled: true,
                       fillColor: AppColors.surface,
-                      isDense: true,
-                      suffixText: "min",
-                      suffixStyle: const TextStyle(color: AppColors.textSub),
+                      prefixIcon: const Icon(Icons.wifi_rounded, color: AppColors.textSub, size: 18),
                       enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.divider)),
                       focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.accent)),
                     ),
-                    onChanged: (v) {
-                      tmp[coin]["time"] = int.tryParse(v) ?? tmp[coin]["time"];
-                      tmp[coin]["enabled"] = true;
-                    },
-                  )),
-                ]),
-              )).toList(),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text("Cancel", style: TextStyle(color: AppColors.textSub)),
-            ),
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.accent,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  const SizedBox(height: 10),
+
+                  // Password field with show/hide toggle
+                  TextField(
+                    controller: passCtrl,
+                    obscureText: !passVisible,
+                    style: const TextStyle(color: AppColors.textPrim, fontSize: 14),
+                    decoration: InputDecoration(
+                      labelText: "New WiFi Password",
+                      labelStyle: const TextStyle(color: AppColors.textSub, fontSize: 13),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      prefixIcon: const Icon(Icons.lock_outline_rounded, color: AppColors.textSub, size: 18),
+                      suffixIcon: IconButton(
+                        icon: Icon(passVisible ? Icons.visibility_off_rounded : Icons.visibility_rounded,
+                          color: AppColors.textSub, size: 18),
+                        onPressed: () => setDlg(() => passVisible = !passVisible),
+                      ),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.divider)),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: AppColors.accent)),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Send WiFi change button
+                  SizedBox(
+                    width: double.infinity,
+                    height: 48,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.accent.withOpacity(0.15),
+                        foregroundColor: AppColors.accent,
+                        elevation: 0,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(color: AppColors.accent.withOpacity(0.4)),
+                        ),
+                      ),
+                      onPressed: isSending ? null : sendWifiChange,
+                      icon: isSending
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.accent))
+                        : const Icon(Icons.send_rounded, size: 17),
+                      label: Text(isSending ? "Sending…" : "Send WiFi to Machine",
+                        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // ── Close ────────────────────────────────────
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () => Navigator.pop(ctx),
+                      child: const Text("Close", style: TextStyle(color: AppColors.textSub, fontSize: 13)),
+                    ),
+                  ),
+                ],
               ),
-              onPressed: () {
-                Map<String, Object> updates = {};
-                tmp.forEach((c, d) {
-                  updates["$c/time"] = d["time"];
-                  updates["$c/enabled"] = d["enabled"];
-                });
-                _db.child("settings/coins").update(updates).then((_) {
-                  if (ctx.mounted) Navigator.pop(ctx);
-                });
-              },
-              child: const Text("Save to Station", style: TextStyle(color: Colors.white)),
             ),
-          ],
-        ),
+          );
+        },
       ),
     );
   }
+
+  // Small section header row
+  Widget _sectionHeader(IconData icon, Color color, String label) => Row(children: [
+    Icon(icon, color: color, size: 16),
+    const SizedBox(width: 6),
+    Text(label.toUpperCase(),
+      style: TextStyle(color: color, fontSize: 11, letterSpacing: 1.4, fontWeight: FontWeight.w700)),
+  ]);
 }
 
 // ─────────────────────────────────────────
