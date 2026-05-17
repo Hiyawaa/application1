@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/painting.dart' show FontFeature;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -978,7 +979,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 24),
               _label('Live Station Status'),
               const SizedBox(height: 10),
-              _liveStatsRow(wifiUsers, activePorts),
+              _liveStatsRow(wifiUsers, activePorts, raw),
               const SizedBox(height: 24),
               _primaryBtn(
                 label: 'View Daily Logs',
@@ -1053,68 +1054,179 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ]),
   );
 
-  Widget _liveStatsRow(int wifiUsers, int activePorts) => Row(children: [
-    Expanded(child: _statBox(
-      icon: Icons.people_alt_rounded, color: _ac,
-      label: 'WiFi Users', value: '$wifiUsers', sub: 'Connected',
-    )),
-    const SizedBox(width: 12),
-    Expanded(child: _statBox(
-      icon: Icons.bolt_rounded, color: _alt,
-      label: 'Active Ports', value: '$activePorts / 4', sub: 'Charging',
-    )),
-  ]);
+  Widget _liveStatsRow(int wifiUsers, int activePorts, Map raw) {
+    // Parse per-port data from Firebase status/ports/0..3
+    final portsRaw = raw['status']?['ports'] as Map? ?? {};
+    final List<_PortInfo> ports = List.generate(4, (i) {
+      final p = portsRaw[i.toString()] as Map? ?? portsRaw[i] as Map? ?? {};
+      return _PortInfo(
+        active:  p['active']  == true,
+        seconds: (p['seconds'] as num?)?.toInt() ?? 0,
+      );
+    });
+    final wifiSecs = (raw['status']?['wifi_seconds'] as num?)?.toInt() ?? 0;
 
-  Widget _statBox({
-    required IconData icon,
-    required Color color,
-    required String label,
-    required String value,
-    required String sub,
-  }) =>
-    Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.card, borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: color.withValues(alpha: 0.25)),
-        gradient: LinearGradient(
-          colors: [AppColors.card, color.withValues(alpha: 0.06)],
-          begin: Alignment.topLeft, end: Alignment.bottomRight,
-        ),
-        boxShadow: [
-          BoxShadow(color: color.withValues(alpha: 0.12), blurRadius: 12, offset: const Offset(0, 4)),
-        ],
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+
+      // ── Charging ports ─────────────────────────────────
+      _sectionHeader(Icons.electrical_services_rounded, _ac, 'Charging Ports'),
+      const SizedBox(height: 10),
+      GridView.count(
+        crossAxisCount: 2,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 10,
+        childAspectRatio: 2.0,
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
+        children: List.generate(4, (i) => _portCard(i + 1, ports[i])),
       ),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-          Container(
-            padding: const EdgeInsets.all(7),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, color: color, size: 16),
+      const SizedBox(height: 20),
+
+      // ── WiFi session ────────────────────────────────────
+      _sectionHeader(Icons.wifi_rounded, AppColors.warn, 'WiFi Session'),
+      const SizedBox(height: 10),
+      _wifiSessionCard(wifiUsers, wifiSecs),
+    ]);
+  }
+
+  Widget _portCard(int portNum, _PortInfo info) {
+    final color = info.active ? _ac : AppColors.textSub;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: info.active ? 0.35 : 0.15)),
+        gradient: info.active
+            ? LinearGradient(
+                colors: [AppColors.card, _ac.withValues(alpha: 0.08)],
+                begin: Alignment.topLeft, end: Alignment.bottomRight,
+              )
+            : null,
+        boxShadow: info.active
+            ? [BoxShadow(color: _ac.withValues(alpha: 0.15), blurRadius: 10, offset: const Offset(0, 4))]
+            : [],
+      ),
+      child: Row(children: [
+        Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(8),
           ),
-          Container(
-            width: 8, height: 8,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle, color: color,
-              boxShadow: [BoxShadow(color: color.withValues(alpha: 0.6), blurRadius: 6)],
+          child: Icon(
+            info.active ? Icons.bolt_rounded : Icons.power_off_rounded,
+            color: color, size: 14,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+          Text('Port $portNum',
+              style: TextStyle(
+                color: color,
+                fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.3,
+              )),
+          const SizedBox(height: 2),
+          Text(
+            info.active ? _fmtTime(info.seconds) : 'Idle',
+            style: TextStyle(
+              color: info.active ? AppColors.textPrim : AppColors.textSub,
+              fontSize: 13, fontWeight: FontWeight.w800,
             ),
           ),
-        ]),
-        const SizedBox(height: 14),
-        Text(value,
-            style: const TextStyle(
-              fontSize: 28, fontWeight: FontWeight.w900, color: AppColors.textPrim, height: 1,
-            )),
-        const SizedBox(height: 4),
-        Text(sub,
-            style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
-        const SizedBox(height: 2),
-        Text(label, style: const TextStyle(color: AppColors.textSub, fontSize: 11)),
+        ])),
+        // Live dot
+        if (info.active)
+          Container(
+            width: 6, height: 6,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle, color: _ac,
+              boxShadow: [BoxShadow(color: _ac.withValues(alpha: 0.7), blurRadius: 6)],
+            ),
+          ),
       ]),
     );
+  }
+
+  Widget _wifiSessionCard(int users, int seconds) {
+    final active = users > 0 || seconds > 0;
+    final color  = active ? AppColors.warn : AppColors.textSub;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: color.withValues(alpha: active ? 0.3 : 0.15)),
+        gradient: active
+            ? LinearGradient(
+                colors: [AppColors.card, AppColors.warn.withValues(alpha: 0.07)],
+                begin: Alignment.topLeft, end: Alignment.bottomRight,
+              )
+            : null,
+        boxShadow: active
+            ? [BoxShadow(color: AppColors.warn.withValues(alpha: 0.12), blurRadius: 12, offset: const Offset(0, 4))]
+            : [],
+      ),
+      child: Row(children: [
+        // Users
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.people_alt_rounded, color: color, size: 14),
+            const SizedBox(width: 5),
+            Text('CONNECTED', style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            active ? '$users ${users == 1 ? "User" : "Users"}' : 'No Session',
+            style: TextStyle(
+              color: active ? AppColors.textPrim : AppColors.textSub,
+              fontSize: 20, fontWeight: FontWeight.w900,
+            ),
+          ),
+        ])),
+
+        // Divider
+        Container(width: 1, height: 48, color: AppColors.divider, margin: const EdgeInsets.symmetric(horizontal: 14)),
+
+        // Time remaining
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.timer_rounded, color: color, size: 14),
+            const SizedBox(width: 5),
+            Text('TIME LEFT', style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
+          ]),
+          const SizedBox(height: 6),
+          Text(
+            active ? _fmtTime(seconds) : '--:--:--',
+            style: TextStyle(
+              color: active ? AppColors.textPrim : AppColors.textSub,
+              fontSize: 20, fontWeight: FontWeight.w900, fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ])),
+
+        // Live indicator
+        if (active)
+          Padding(
+            padding: const EdgeInsets.only(left: 6),
+            child: Container(
+              width: 8, height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle, color: AppColors.warn,
+                boxShadow: [BoxShadow(color: AppColors.warn.withValues(alpha: 0.7), blurRadius: 8)],
+              ),
+            ),
+          ),
+      ]),
+    );
+  }
+
+  String _fmtTime(int s) {
+    final h = s ~/ 3600;
+    final m = (s % 3600) ~/ 60;
+    final sec = s % 60;
+    return '${h.toString().padLeft(2,'0')}:${m.toString().padLeft(2,'0')}:${sec.toString().padLeft(2,'0')}';
+  }
 
   // ─────────────────────────────────────────
   // RECONNECT FLOW
@@ -1760,6 +1872,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
       ),
     );
   }
+}
+
+// ─────────────────────────────────────────
+// PORT INFO DATA CLASS
+// ─────────────────────────────────────────
+class _PortInfo {
+  final bool active;
+  final int  seconds;
+  const _PortInfo({required this.active, required this.seconds});
 }
 
 // ─────────────────────────────────────────
